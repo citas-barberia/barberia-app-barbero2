@@ -15,7 +15,7 @@ app.secret_key = "secret_key"
 # =========================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "barberia123")
 NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50672314147")
-DOMINIO = os.getenv("DOMINIO", "https://barberia-app-1.onrender.com")
+DOMINIO = os.getenv("DOMINIO", "")
 
 # ✅ Nombre del barbero
 NOMBRE_BARBERO = os.getenv("NOMBRE_BARBERO", "sebastian")
