@@ -14,7 +14,7 @@ app.secret_key = "secret_key"
 # CONFIG WHATSAPP (Meta)
 # =========================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "barberia123")
-NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50672314147")
+NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50670738549")
 DOMINIO = os.getenv("DOMINIO", "")
 
 # ✅ Nombre del barbero
@@ -25,7 +25,9 @@ CLAVE_BARBERO = os.getenv("CLAVE_BARBERO", "1234")
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-
+# (Opcional) Solo para debug o lógica por barbero
+PNID_ERICSON = os.getenv("PNID_ERICSON")
+PNID_SEBASTIAN = os.getenv("PNID_SEBASTIAN")
 # =========================
 # Anti-duplicados webhook
 # =========================
@@ -43,15 +45,24 @@ def normalizar_barbero(barbero: str) -> str:
     return barbero.title()
 
 
-def enviar_whatsapp(to_numero: str, mensaje: str) -> bool:
-    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
-        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID en variables de entorno")
+def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override: str = None) -> bool:
+    """
+    Si phone_number_id_override viene (del webhook), responde por ese número.
+    Si no viene, usa el PHONE_NUMBER_ID fijo del servicio.
+    """
+    if not WHATSAPP_TOKEN:
+        print("⚠️ Falta WHATSAPP_TOKEN en variables de entorno")
+        return False
+
+    phone_id = phone_number_id_override or PHONE_NUMBER_ID
+    if not phone_id:
+        print("⚠️ Falta PHONE_NUMBER_ID y no se recibió override")
         return False
 
     # normalizar numero (sin + ni espacios)
     to_numero = str(to_numero).replace("+", "").replace(" ", "").strip()
 
-    url = f"https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/messages"
+    url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
@@ -66,8 +77,7 @@ def enviar_whatsapp(to_numero: str, mensaje: str) -> bool:
     try:
         r = requests.post(url, headers=headers, json=data, timeout=15)
 
-        # ✅ LOG SIEMPRE (para saber si realmente está enviando)
-        print("📤 WhatsApp -> to:", to_numero, "| status:", r.status_code)
+        print("📤 WhatsApp -> from phone_id:", phone_id, "| to:", to_numero, "| status:", r.status_code)
 
         if r.status_code >= 400:
             print("❌ Error WhatsApp:", r.text)
@@ -440,9 +450,11 @@ def webhook():
         return "Token incorrecto", 403
 
     data = request.get_json()
-
     try:
         value = data["entry"][0]["changes"][0]["value"]
+
+        # ✅ ID del número que recibió el mensaje (Ericson o Sebastián)
+        phone_number_id_in = value["metadata"]["phone_number_id"]
 
         # Ignorar eventos que NO son mensajes
         if "messages" not in value:
@@ -477,7 +489,9 @@ Para agendar tu cita entra aquí:
 
 (Guarda este link para cancelar luego)
 """
-        enviar_whatsapp(numero, mensaje)
+
+        # ✅ AQUÍ ESTÁ EL CAMBIO: responder usando el número que recibió el mensaje
+        enviar_whatsapp(numero, mensaje, phone_number_id_override=phone_number_id_in)
 
     except Exception as e:
         print("Error webhook:", e)
