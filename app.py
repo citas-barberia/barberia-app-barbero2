@@ -16,7 +16,7 @@ app.secret_key = "secret_key"
 # =========================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "barberia123")
 NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50670738549")  # fallback (si no pones NUMERO_ERICSON/SEBASTIAN)
-DOMINIO = os.getenv("DOMINIO", "")
+DOMINIO = os.getenv("DOMINIO", "").rstrip("/")  # importante: sin "/" al final
 
 # ✅ Nombre del barbero (fallback / default)
 NOMBRE_BARBERO = os.getenv("NOMBRE_BARBERO", "sebastian")
@@ -56,6 +56,17 @@ def normalizar_barbero(barbero: str) -> str:
         return ""
     barbero = " ".join(barbero.strip().split())
     return barbero.title()
+
+
+def _barbero_key_from_phone_id(phone_id: str) -> str:
+    """
+    Devuelve 'ericson' o 'sebastian' según el phone_number_id que recibió el mensaje.
+    """
+    if phone_id and PNID_ERICSON and str(phone_id) == str(PNID_ERICSON):
+        return "ericson"
+    if phone_id and PNID_SEBASTIAN and str(phone_id) == str(PNID_SEBASTIAN):
+        return "sebastian"
+    return ""
 
 
 def _get_token_for_phone_id(phone_id: str) -> str:
@@ -123,7 +134,7 @@ def _destino_numero_barbero(barbero_key: str) -> str:
     if barbero_key == "ericson" and NUMERO_ERICSON:
         return NUMERO_ERICSON
 
-    # fallback (si no seteaste vars)
+    # fallback
     return (NUMERO_BARBERO or "").strip()
 
 
@@ -234,7 +245,6 @@ servicios = {
 }
 
 
-# ✅ Generador de horas cada 30 min en formato 9:00am, 9:30am, etc.
 def generar_horas(inicio_h, inicio_m, fin_h, fin_m):
     horas = []
     t = inicio_h * 60 + inicio_m
@@ -255,7 +265,6 @@ def generar_horas(inicio_h, inicio_m, fin_h, fin_m):
     return horas
 
 
-# Default (Lun-Sáb): 9:00am a 7:30pm
 HORAS_BASE = generar_horas(8, 0, 19, 30)
 
 
@@ -266,7 +275,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 USAR_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
-SUPABASE_TIMEOUT = int(os.getenv("SUPABASE_TIMEOUT", "10"))  # ✅ nunca se cuelga más de 10s
+SUPABASE_TIMEOUT = int(os.getenv("SUPABASE_TIMEOUT", "10"))
 
 if USAR_SUPABASE:
     print("✅ Supabase configurado (REST con timeout)")
@@ -395,7 +404,7 @@ def leer_citas_db():
     url = _supabase_table_url("citas")
     data = _supabase_request("GET", url, params={"select": "*"})
     if data is None:
-        return None  # para fallback
+        return None
     citas = []
     for r in data:
         citas.append({
@@ -457,7 +466,7 @@ def marcar_atendida_db_por_id(id_cita):
 
 
 # ==========================================================
-# WRAPPERS (con fallback seguro)
+# WRAPPERS
 # ==========================================================
 def leer_citas():
     if USAR_SUPABASE:
@@ -516,11 +525,34 @@ def marcar_atendida_por_id(id_cita):
 
 
 # =========================
+# ✅ RUTAS POR BARBERO (LINKS DIFERENTES)
+# =========================
+def _redirect_set_barbero(barbero_key: str):
+    cliente_id = (request.args.get("cliente_id") or "").strip()
+    resp = make_response(redirect(url_for("index", cliente_id=cliente_id) if cliente_id else url_for("index")))
+    resp.set_cookie("barbero_preferido", barbero_key, max_age=60 * 60 * 24 * 365)  # 1 año
+    return resp
+
+
+@app.route("/ericson", methods=["GET", "HEAD"])
+def landing_ericson():
+    if request.method == "HEAD":
+        return "", 200
+    return _redirect_set_barbero("ericson")
+
+
+@app.route("/sebastian", methods=["GET", "HEAD"])
+def landing_sebastian():
+    if request.method == "HEAD":
+        return "", 200
+    return _redirect_set_barbero("sebastian")
+
+
+# =========================
 # WEBHOOK (Meta)
 # =========================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    # ✅ DEBUG de variables (NO expone tokens)
     print(
         "DEBUG ENV:",
         "WHATSAPP_TOKEN:", bool(os.getenv("WHATSAPP_TOKEN")),
@@ -556,10 +588,8 @@ def webhook():
         value = data["entry"][0]["changes"][0]["value"]
         print("✅ METADATA:", value.get("metadata"))
 
-        # ✅ ID del número que recibió el mensaje
         phone_number_id_in = value["metadata"]["phone_number_id"]
 
-        # Ignorar eventos que NO son mensajes
         if "messages" not in value:
             return "ok", 200
 
@@ -569,9 +599,7 @@ def webhook():
 
         print("📲 INCOMING from:", numero, "| phone_number_id_in:", phone_number_id_in)
 
-        # ======================
         # Anti duplicados
-        # ======================
         ahora = time.time()
         for k, t in list(PROCESADOS.items()):
             if ahora - t > TTL_MSG:
@@ -583,11 +611,15 @@ def webhook():
         if msg_id:
             PROCESADOS[msg_id] = ahora
 
-        # ✅ Elegir nombre y token según el número que recibió el mensaje
+        barbero_key_in = _barbero_key_from_phone_id(phone_number_id_in)
         nombre_barbero_msg = _get_nombre_for_phone_id(phone_number_id_in)
         token_respuesta = _get_token_for_phone_id(phone_number_id_in)
 
-        link = f"{DOMINIO}/?cliente_id={numero}"
+        # ✅ LINK DIFERENTE POR BARBERO
+        if barbero_key_in in ("ericson", "sebastian"):
+            link = f"{DOMINIO}/{barbero_key_in}?cliente_id={numero}"
+        else:
+            link = f"{DOMINIO}/?cliente_id={numero}"
 
         mensaje = f"""Hola 👋 Bienvenido a Barbería {nombre_barbero_msg} 💈
 
@@ -602,7 +634,6 @@ Para agendar tu cita entra aquí:
 (Guarda este link para cancelar luego)
 """
 
-        # ✅ Responder usando el phone_number_id que recibió + token correcto
         enviar_whatsapp(
             numero,
             mensaje,
@@ -634,6 +665,7 @@ def index():
     if request.method == "HEAD":
         return "", 200
 
+    # ✅ cliente_id
     cliente_id_url = request.args.get("cliente_id")
     cliente_id_cookie = request.cookies.get("cliente_id")
 
@@ -644,17 +676,18 @@ def index():
     else:
         cliente_id = str(uuid.uuid4())
 
+    # ✅ barbero preferido (por link /ericson o /sebastian)
+    barbero_preferido = (request.args.get("barbero") or request.cookies.get("barbero_preferido") or "").strip().lower()
+
     citas_todas = leer_citas()
 
-    # ✅ Solo citas de este cliente
+    # Solo citas de este cliente
     citas_cliente_all = [c for c in citas_todas if str(c.get("cliente_id", "")) == str(cliente_id)]
 
-    # ✅ “Borrar cada mes” = mostrar SOLO citas del mes actual
     hoy_dt = _now_cr()
     mes_actual = hoy_dt.strftime("%Y-%m")
     citas_cliente = [c for c in citas_cliente_all if str(c.get("fecha", "")).startswith(mes_actual)]
 
-    # ✅ Calcular si puede cancelar: hasta 12h después de la hora agendada
     for c in citas_cliente:
         cita_dt = _cita_a_datetime(c.get("fecha"), c.get("hora"))
         if cita_dt:
@@ -695,9 +728,7 @@ def index():
         id_cita = str(uuid.uuid4())
         guardar_cita(id_cita, cliente, cliente_id, barbero, servicio, precio, fecha, hora)
 
-        # ======================
-        # ✅ AVISO AL BARBERO CORRECTO
-        # ======================
+        # ✅ Aviso al barbero correcto
         msg_barbero = f"""💈 Nueva cita agendada
 
 Cliente: {cliente}
@@ -718,10 +749,9 @@ Precio: ₡{precio}
             token_override=token_send,
         )
 
-        # ======================
-        # ✅ CONFIRMACIÓN AL CLIENTE (sale del WA business correcto)
-        # ======================
+        # ✅ Confirmación al cliente desde el WA business correcto
         if es_numero_whatsapp(cliente_id):
+            # link de cancelación (podés dejarlo en /, no afecta)
             link = f"{DOMINIO}/?cliente_id={cliente_id}"
 
             msg_cliente = f"""✅ Cita confirmada en Barbería {barbero} 💈
@@ -758,11 +788,14 @@ Para cancelar: entra a este link:
         servicios=servicios,
         citas=citas_cliente,
         cliente_id=cliente_id,
-        numero_barbero=NUMERO_BARBERO,  # lo dejamos para no romper tu template
-        nombre_barbero=NOMBRE_BARBERO,  # fallback para el template
-        hoy_iso=hoy_dt.strftime("%Y-%m-%d")
+        numero_barbero=NUMERO_BARBERO,
+        nombre_barbero=NOMBRE_BARBERO,
+        hoy_iso=hoy_dt.strftime("%Y-%m-%d"),
+        barbero_preferido=barbero_preferido,  # ✅ nuevo (opcional para el template)
     ))
     resp.set_cookie("cliente_id", cliente_id, max_age=60 * 60 * 24 * 365)
+    if barbero_preferido:
+        resp.set_cookie("barbero_preferido", barbero_preferido, max_age=60 * 60 * 24 * 365)
     return resp
 
 
@@ -786,7 +819,6 @@ def cancelar():
     fecha = cita.get("fecha", "")
     hora = cita.get("hora", "")
 
-    # Para enviar desde / hacia el barbero correcto
     barbero_key = _key_barbero_from_nombre(barbero)
     phone_id_send, token_send = _sender_for_barbero_key(barbero_key)
     numero_destino = _destino_numero_barbero(barbero_key)
