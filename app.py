@@ -45,28 +45,22 @@ def normalizar_barbero(barbero: str) -> str:
     return barbero.title()
 
 
-def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override: str = None) -> bool:
-    """
-    Si phone_number_id_override viene (del webhook), responde por ese número.
-    Si no viene, usa el PHONE_NUMBER_ID fijo del servicio.
-    """
-    if not WHATSAPP_TOKEN:
-        print("⚠️ Falta WHATSAPP_TOKEN en variables de entorno")
-        return False
-
+def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None) -> bool:
     phone_id = phone_number_id_override or PHONE_NUMBER_ID
-    if not phone_id:
-        print("⚠️ Falta PHONE_NUMBER_ID y no se recibió override")
+
+    if not WHATSAPP_TOKEN or not phone_id:
+        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID")
         return False
 
-    # normalizar numero (sin + ni espacios)
     to_numero = str(to_numero).replace("+", "").replace(" ", "").strip()
 
     url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
+
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
+
     data = {
         "messaging_product": "whatsapp",
         "to": to_numero,
@@ -76,8 +70,7 @@ def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override: str 
 
     try:
         r = requests.post(url, headers=headers, json=data, timeout=15)
-
-        print("📤 WhatsApp -> from phone_id:", phone_id, "| to:", to_numero, "| status:", r.status_code)
+        print("📤 WhatsApp -> to:", to_numero, "| status:", r.status_code, "| phone_id:", phone_id)
 
         if r.status_code >= 400:
             print("❌ Error WhatsApp:", r.text)
@@ -491,8 +484,11 @@ Para agendar tu cita entra aquí:
 """
 
         # ✅ AQUÍ ESTÁ EL CAMBIO: responder usando el número que recibió el mensaje
-        enviar_whatsapp(numero, mensaje, phone_number_id_override=phone_number_id_in)
-
+        enviar_whatsapp(
+    numero,
+    mensaje,
+    phone_number_id_override=phone_number_id_in
+) 
     except Exception as e:
         print("Error webhook:", e)
 
