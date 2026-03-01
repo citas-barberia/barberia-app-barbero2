@@ -18,14 +18,18 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "barberia123")
 NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50670738549")
 DOMINIO = os.getenv("DOMINIO", "")
 
-# ✅ Nombre del barbero
+# ✅ Nombre del barbero (fallback / default)
 NOMBRE_BARBERO = os.getenv("NOMBRE_BARBERO", "sebastian")
+
+# ✅ Nombres por barbero (para responder bien según el número que recibió)
+NOMBRE_ERICSON = os.getenv("NOMBRE_ERICSON", "Ericson")
+NOMBRE_SEBASTIAN = os.getenv("NOMBRE_SEBASTIAN", "Sebastian")
 
 # ✅ Clave para entrar al panel del barbero
 CLAVE_BARBERO = os.getenv("CLAVE_BARBERO", "1234")
 
 # Tokens / PNIDs
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")  # Token principal (Ericson o el que uses como default)
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")  # Token principal (default)
 WHATSAPP_TOKEN_SEBASTIAN = os.getenv("WHATSAPP_TOKEN_SEBASTIAN")  # Token para el número de Sebastián (si aplica)
 
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")  # default phone_number_id (opcional)
@@ -58,6 +62,20 @@ def _get_token_for_phone_id(phone_id: str) -> str:
     if phone_id and PNID_SEBASTIAN and str(phone_id) == str(PNID_SEBASTIAN):
         return WHATSAPP_TOKEN_SEBASTIAN or WHATSAPP_TOKEN
     return WHATSAPP_TOKEN
+
+
+def _get_nombre_for_phone_id(phone_id: str) -> str:
+    """
+    Devuelve el NOMBRE correcto según el phone_number_id que entró en el webhook.
+    - Si el phone_id coincide con PNID_ERICSON => NOMBRE_ERICSON
+    - Si coincide con PNID_SEBASTIAN => NOMBRE_SEBASTIAN
+    - Si no => NOMBRE_BARBERO (fallback)
+    """
+    if phone_id and PNID_ERICSON and str(phone_id) == str(PNID_ERICSON):
+        return NOMBRE_ERICSON
+    if phone_id and PNID_SEBASTIAN and str(phone_id) == str(PNID_SEBASTIAN):
+        return NOMBRE_SEBASTIAN
+    return NOMBRE_BARBERO
 
 
 def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None, token_override=None) -> bool:
@@ -448,13 +466,11 @@ def marcar_atendida_por_id(id_cita):
     return True
 
 
-# # =========================
+# =========================
 # WEBHOOK (Meta)
 # =========================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    import os
-
     # ✅ DEBUG de variables (NO expone tokens)
     print(
         "DEBUG ENV:",
@@ -463,11 +479,9 @@ def webhook():
         "WHATSAPP_TOKEN_SEBASTIAN:", bool(os.getenv("WHATSAPP_TOKEN_SEBASTIAN")),
         "PNID_ERICSON:", bool(os.getenv("PNID_ERICSON")),
         "PNID_SEBASTIAN:", bool(os.getenv("PNID_SEBASTIAN")),
+        "NOMBRE_ERICSON:", bool(os.getenv("NOMBRE_ERICSON")),
+        "NOMBRE_SEBASTIAN:", bool(os.getenv("NOMBRE_SEBASTIAN")),
     )
-
-    # 🔴 Verificación básica
-    if not os.getenv("WHATSAPP_TOKEN") or not os.getenv("PHONE_NUMBER_ID"):
-        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID")
 
     # ======================
     # VERIFICACIÓN META (GET)
@@ -518,13 +532,17 @@ def webhook():
         if msg_id:
             PROCESADOS[msg_id] = ahora
 
+        # ✅ Elegir nombre y token según el número que recibió el mensaje
+        nombre_barbero_msg = _get_nombre_for_phone_id(phone_number_id_in)
+        token_respuesta = _get_token_for_phone_id(phone_number_id_in)
+
         link = f"{DOMINIO}/?cliente_id={numero}"
 
-        mensaje = f"""Hola 👋 Bienvenido a Barbería {NOMBRE_BARBERO} 💈
+        mensaje = f"""Hola 👋 Bienvenido a Barbería {nombre_barbero_msg} 💈
 
 🕒 Horario de atención:
 • Lunes a sábado: 9:00am – 7:30pm
-• Miércoles: {NOMBRE_BARBERO} no labora (la barbería sigue abierta)
+• Miércoles: {nombre_barbero_msg} no labora (la barbería sigue abierta)
 • Domingo: 9:00am – 3:00pm
 
 Para agendar tu cita entra aquí:
@@ -533,17 +551,19 @@ Para agendar tu cita entra aquí:
 (Guarda este link para cancelar luego)
 """
 
-        # ✅ Responder usando el número que recibió
+        # ✅ Responder usando el phone_number_id que recibió + token correcto
         enviar_whatsapp(
             numero,
             mensaje,
-            phone_number_id_override=phone_number_id_in
+            phone_number_id_override=phone_number_id_in,
+            token_override=token_respuesta,
         )
 
     except Exception as e:
         print("❌ Error webhook:", e)
 
     return "ok", 200
+
 
 # =========================
 # RUTAS APP
@@ -941,7 +961,6 @@ def horas():
 
 if __name__ == "__main__":
     app.run(debug=True)
-
 
 
 
