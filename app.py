@@ -15,7 +15,7 @@ app.secret_key = "secret_key"
 # CONFIG WHATSAPP (Meta)
 # =========================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "barberia123")
-NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50670738549")
+NUMERO_BARBERO = os.getenv("NUMERO_BARBERO", "50670738549")  # fallback (si no pones NUMERO_ERICSON/SEBASTIAN)
 DOMINIO = os.getenv("DOMINIO", "")
 
 # ✅ Nombre del barbero (fallback / default)
@@ -35,6 +35,11 @@ WHATSAPP_TOKEN_SEBASTIAN = os.getenv("WHATSAPP_TOKEN_SEBASTIAN")  # Token para e
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")  # default phone_number_id (opcional)
 PNID_ERICSON = os.getenv("PNID_ERICSON")
 PNID_SEBASTIAN = os.getenv("PNID_SEBASTIAN")
+
+# ✅ Números destino (a quién avisarle de nuevas citas / cancelaciones)
+# (Ponelos en Render > Environment)
+NUMERO_ERICSON = os.getenv("NUMERO_ERICSON", "").strip()
+NUMERO_SEBASTIAN = os.getenv("NUMERO_SEBASTIAN", "").strip()
 
 # =========================
 # Anti-duplicados webhook
@@ -76,6 +81,50 @@ def _get_nombre_for_phone_id(phone_id: str) -> str:
     if phone_id and PNID_SEBASTIAN and str(phone_id) == str(PNID_SEBASTIAN):
         return NOMBRE_SEBASTIAN
     return NOMBRE_BARBERO
+
+
+def _key_barbero_from_nombre(nombre_barbero: str) -> str:
+    """
+    Devuelve 'ericson' o 'sebastian' según el nombre del barbero elegido en el form / cita.
+    (Soporta 'Ericson', 'Sebastian', etc.)
+    """
+    s = (nombre_barbero or "").strip().lower()
+    if "seb" in s:
+        return "sebastian"
+    if "eri" in s:
+        return "ericson"
+    return ""
+
+
+def _sender_for_barbero_key(barbero_key: str):
+    """
+    Devuelve (phone_number_id, token) que se debe usar para ENVIAR según el barbero.
+    """
+    if barbero_key == "sebastian":
+        phone_id = PNID_SEBASTIAN or PHONE_NUMBER_ID
+        token = WHATSAPP_TOKEN_SEBASTIAN or WHATSAPP_TOKEN
+        return phone_id, token
+
+    if barbero_key == "ericson":
+        phone_id = PNID_ERICSON or PHONE_NUMBER_ID
+        token = WHATSAPP_TOKEN
+        return phone_id, token
+
+    # fallback
+    return PHONE_NUMBER_ID, WHATSAPP_TOKEN
+
+
+def _destino_numero_barbero(barbero_key: str) -> str:
+    """
+    Devuelve el número personal al que hay que avisar (Ericson o Sebastian).
+    """
+    if barbero_key == "sebastian" and NUMERO_SEBASTIAN:
+        return NUMERO_SEBASTIAN
+    if barbero_key == "ericson" and NUMERO_ERICSON:
+        return NUMERO_ERICSON
+
+    # fallback (si no seteaste vars)
+    return (NUMERO_BARBERO or "").strip()
 
 
 def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None, token_override=None) -> bool:
@@ -481,6 +530,8 @@ def webhook():
         "PNID_SEBASTIAN:", bool(os.getenv("PNID_SEBASTIAN")),
         "NOMBRE_ERICSON:", bool(os.getenv("NOMBRE_ERICSON")),
         "NOMBRE_SEBASTIAN:", bool(os.getenv("NOMBRE_SEBASTIAN")),
+        "NUMERO_ERICSON:", bool(os.getenv("NUMERO_ERICSON")),
+        "NUMERO_SEBASTIAN:", bool(os.getenv("NUMERO_SEBASTIAN")),
     )
 
     # ======================
@@ -644,6 +695,9 @@ def index():
         id_cita = str(uuid.uuid4())
         guardar_cita(id_cita, cliente, cliente_id, barbero, servicio, precio, fecha, hora)
 
+        # ======================
+        # ✅ AVISO AL BARBERO CORRECTO
+        # ======================
         msg_barbero = f"""💈 Nueva cita agendada
 
 Cliente: {cliente}
@@ -653,12 +707,24 @@ Fecha: {fecha}
 Hora: {hora}
 Precio: ₡{precio}
 """
-        enviar_whatsapp(NUMERO_BARBERO, msg_barbero)
+        barbero_key = _key_barbero_from_nombre(barbero)
+        phone_id_send, token_send = _sender_for_barbero_key(barbero_key)
+        numero_destino = _destino_numero_barbero(barbero_key)
 
+        enviar_whatsapp(
+            numero_destino,
+            msg_barbero,
+            phone_number_id_override=phone_id_send,
+            token_override=token_send,
+        )
+
+        # ======================
+        # ✅ CONFIRMACIÓN AL CLIENTE (sale del WA business correcto)
+        # ======================
         if es_numero_whatsapp(cliente_id):
             link = f"{DOMINIO}/?cliente_id={cliente_id}"
 
-            msg_cliente = f"""✅ Cita confirmada en Barbería {NOMBRE_BARBERO} 💈
+            msg_cliente = f"""✅ Cita confirmada en Barbería {barbero} 💈
 
 Cliente: {cliente}
 Barbero: {barbero}
@@ -669,13 +735,18 @@ Total: ₡{precio}
 
 🕒 Horario:
 Lunes a sábado: 9:00am – 7:30pm
-Miércoles: {NOMBRE_BARBERO} no labora (la barbería sigue abierta)
+Miércoles: {barbero} no labora (la barbería sigue abierta)
 Domingo: 9:00am – 3:00pm
 
 Para cancelar: entra a este link:
 {link}
 """
-            enviar_whatsapp(cliente_id, msg_cliente)
+            enviar_whatsapp(
+                cliente_id,
+                msg_cliente,
+                phone_number_id_override=phone_id_send,
+                token_override=token_send,
+            )
 
         flash("Cita agendada exitosamente")
         resp = make_response(redirect(url_for("index", cliente_id=cliente_id)))
@@ -687,8 +758,8 @@ Para cancelar: entra a este link:
         servicios=servicios,
         citas=citas_cliente,
         cliente_id=cliente_id,
-        numero_barbero=NUMERO_BARBERO,
-        nombre_barbero=NOMBRE_BARBERO,
+        numero_barbero=NUMERO_BARBERO,  # lo dejamos para no romper tu template
+        nombre_barbero=NOMBRE_BARBERO,  # fallback para el template
         hoy_iso=hoy_dt.strftime("%Y-%m-%d")
     ))
     resp.set_cookie("cliente_id", cliente_id, max_age=60 * 60 * 24 * 365)
@@ -715,6 +786,11 @@ def cancelar():
     fecha = cita.get("fecha", "")
     hora = cita.get("hora", "")
 
+    # Para enviar desde / hacia el barbero correcto
+    barbero_key = _key_barbero_from_nombre(barbero)
+    phone_id_send, token_send = _sender_for_barbero_key(barbero_key)
+    numero_destino = _destino_numero_barbero(barbero_key)
+
     msg_barbero = f"""❌ Cita CANCELADA
 
 Cliente: {cliente}
@@ -722,10 +798,15 @@ Barbero: {barbero}
 Fecha: {fecha}
 Hora: {hora}
 """
-    enviar_whatsapp(NUMERO_BARBERO, msg_barbero)
+    enviar_whatsapp(
+        numero_destino,
+        msg_barbero,
+        phone_number_id_override=phone_id_send,
+        token_override=token_send,
+    )
 
     if es_numero_whatsapp(cliente_id):
-        msg_cliente = f"""❌ Tu cita en Barbería {NOMBRE_BARBERO} fue cancelada
+        msg_cliente = f"""❌ Tu cita en Barbería {barbero} fue cancelada
 
 Barbero: {barbero}
 Fecha: {fecha}
@@ -733,7 +814,12 @@ Hora: {hora}
 
 Si deseas agendar de nuevo, entra al link.
 """
-        enviar_whatsapp(cliente_id, msg_cliente)
+        enviar_whatsapp(
+            cliente_id,
+            msg_cliente,
+            phone_number_id_override=phone_id_send,
+            token_override=token_send,
+        )
 
     flash("Cita cancelada correctamente")
     resp = make_response(redirect(url_for("index", cliente_id=cliente_id)))
