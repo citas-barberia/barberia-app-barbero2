@@ -444,6 +444,10 @@ def webhook():
 
     data = request.get_json()
     try:
+        print("📥 WEBHOOK RAW:", data)
+
+        value = data["entry"][0]["changes"][0]["value"]
+        print("✅ METADATA:", value.get("metadata"))
         value = data["entry"][0]["changes"][0]["value"]
 
         # ✅ ID del número que recibió el mensaje (Ericson o Sebastián)
@@ -456,7 +460,8 @@ def webhook():
         msg = value["messages"][0]
         numero = msg.get("from")
         msg_id = msg.get("id")
-
+        phone_number_id_in = value["metadata"]["phone_number_id"]
+        print("📲 INCOMING from:", numero, "| phone_number_id_in:", phone_number_id_in)
         # limpiar viejos
         ahora = time.time()
         for k, t in list(PROCESADOS.items()):
