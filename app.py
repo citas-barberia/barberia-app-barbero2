@@ -2,10 +2,11 @@ from flask import Flask, render_template, request, redirect, flash, url_for, jso
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
 import os
-TZ = ZoneInfo(os.getenv("TZ", "America/Costa_Rica"))
 import uuid
 import requests
 import time  # anti-duplicados webhook
+
+TZ = ZoneInfo(os.getenv("TZ", "America/Costa_Rica"))
 
 app = Flask(__name__)
 app.secret_key = "secret_key"
@@ -23,11 +24,14 @@ NOMBRE_BARBERO = os.getenv("NOMBRE_BARBERO", "sebastian")
 # ✅ Clave para entrar al panel del barbero
 CLAVE_BARBERO = os.getenv("CLAVE_BARBERO", "1234")
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-# (Opcional) Solo para debug o lógica por barbero
+# Tokens / PNIDs
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")  # Token principal (Ericson o el que uses como default)
+WHATSAPP_TOKEN_SEBASTIAN = os.getenv("WHATSAPP_TOKEN_SEBASTIAN")  # Token para el número de Sebastián (si aplica)
+
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")  # default phone_number_id (opcional)
 PNID_ERICSON = os.getenv("PNID_ERICSON")
 PNID_SEBASTIAN = os.getenv("PNID_SEBASTIAN")
+
 # =========================
 # Anti-duplicados webhook
 # =========================
@@ -45,11 +49,23 @@ def normalizar_barbero(barbero: str) -> str:
     return barbero.title()
 
 
-def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None) -> bool:
-    phone_id = phone_number_id_override or PHONE_NUMBER_ID
+def _get_token_for_phone_id(phone_id: str) -> str:
+    """
+    Devuelve el token correcto según el phone_number_id que entró en el webhook.
+    - Si el phone_id coincide con PNID_SEBASTIAN => usa WHATSAPP_TOKEN_SEBASTIAN
+    - Si no => usa WHATSAPP_TOKEN
+    """
+    if phone_id and PNID_SEBASTIAN and str(phone_id) == str(PNID_SEBASTIAN):
+        return WHATSAPP_TOKEN_SEBASTIAN or WHATSAPP_TOKEN
+    return WHATSAPP_TOKEN
 
-    if not WHATSAPP_TOKEN or not phone_id:
-        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID")
+
+def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None, token_override=None) -> bool:
+    phone_id = phone_number_id_override or PHONE_NUMBER_ID
+    token = token_override or WHATSAPP_TOKEN
+
+    if not token or not phone_id:
+        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID (o overrides)")
         return False
 
     to_numero = str(to_numero).replace("+", "").replace(" ", "").strip()
@@ -57,7 +73,7 @@ def enviar_whatsapp(to_numero: str, mensaje: str, phone_number_id_override=None)
     url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
 
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
@@ -104,6 +120,8 @@ def _precio_a_int(valor):
         return int(float(s))
     except:
         return 0
+
+
 def _hora_ampm_a_time(hora_str: str):
     """
     Convierte '9:00am' o '12:30pm' a datetime.time
@@ -112,7 +130,6 @@ def _hora_ampm_a_time(hora_str: str):
         return None
     s = str(hora_str).strip().lower().replace(" ", "")
     try:
-        # formato tipo 9:00am / 12:30pm
         return datetime.strptime(s, "%I:%M%p").time()
     except:
         return None
@@ -137,6 +154,7 @@ def _cita_a_datetime(fecha_str: str, hora_str: str):
 
 def _now_cr():
     return datetime.now(TZ)
+
 
 # =========================
 # Servicios y horas
@@ -337,8 +355,8 @@ def guardar_cita_db(cliente, cliente_id, barbero, servicio, precio, fecha, hora)
         "fecha": fecha,
         "hora": hora
     }
-    res = _supabase_request("POST", url, json_body=body, extra_headers={"Prefer": "return=minimal"})
-    return res is not None or True
+    _supabase_request("POST", url, json_body=body, extra_headers={"Prefer": "return=minimal"})
+    return True
 
 
 def buscar_cita_db_por_id(id_cita):
@@ -361,14 +379,14 @@ def buscar_cita_db_por_id(id_cita):
 
 def cancelar_cita_db_por_id(id_cita):
     url = _supabase_table_url("citas")
-    res = _supabase_request("PATCH", url, params={"id": f"eq.{id_cita}"}, json_body={"servicio": "CITA CANCELADA"})
-    return res is not None or True
+    _supabase_request("PATCH", url, params={"id": f"eq.{id_cita}"}, json_body={"servicio": "CITA CANCELADA"})
+    return True
 
 
 def marcar_atendida_db_por_id(id_cita):
     url = _supabase_table_url("citas")
-    res = _supabase_request("PATCH", url, params={"id": f"eq.{id_cita}"}, json_body={"servicio": "CITA ATENDIDA"})
-    return res is not None or True
+    _supabase_request("PATCH", url, params={"id": f"eq.{id_cita}"}, json_body={"servicio": "CITA ATENDIDA"})
+    return True
 
 
 # ==========================================================
@@ -430,27 +448,50 @@ def marcar_atendida_por_id(id_cita):
     return True
 
 
-# =========================
+# # =========================
 # WEBHOOK (Meta)
 # =========================
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+    import os
+
+    # ✅ DEBUG de variables (NO expone tokens)
+    print(
+        "DEBUG ENV:",
+        "WHATSAPP_TOKEN:", bool(os.getenv("WHATSAPP_TOKEN")),
+        "PHONE_NUMBER_ID:", bool(os.getenv("PHONE_NUMBER_ID")),
+        "WHATSAPP_TOKEN_SEBASTIAN:", bool(os.getenv("WHATSAPP_TOKEN_SEBASTIAN")),
+        "PNID_ERICSON:", bool(os.getenv("PNID_ERICSON")),
+        "PNID_SEBASTIAN:", bool(os.getenv("PNID_SEBASTIAN")),
+    )
+
+    # 🔴 Verificación básica
+    if not os.getenv("WHATSAPP_TOKEN") or not os.getenv("PHONE_NUMBER_ID"):
+        print("⚠️ Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID")
+
+    # ======================
+    # VERIFICACIÓN META (GET)
+    # ======================
     if request.method == "GET":
         token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
+
         if token == VERIFY_TOKEN:
             return challenge
         return "Token incorrecto", 403
 
+    # ======================
+    # MENSAJES (POST)
+    # ======================
     data = request.get_json()
+
     try:
         print("📥 WEBHOOK RAW:", data)
 
         value = data["entry"][0]["changes"][0]["value"]
         print("✅ METADATA:", value.get("metadata"))
-        value = data["entry"][0]["changes"][0]["value"]
 
-        # ✅ ID del número que recibió el mensaje (Ericson o Sebastián)
+        # ✅ ID del número que recibió el mensaje
         phone_number_id_in = value["metadata"]["phone_number_id"]
 
         # Ignorar eventos que NO son mensajes
@@ -460,9 +501,12 @@ def webhook():
         msg = value["messages"][0]
         numero = msg.get("from")
         msg_id = msg.get("id")
-        phone_number_id_in = value["metadata"]["phone_number_id"]
+
         print("📲 INCOMING from:", numero, "| phone_number_id_in:", phone_number_id_in)
-        # limpiar viejos
+
+        # ======================
+        # Anti duplicados
+        # ======================
         ahora = time.time()
         for k, t in list(PROCESADOS.items()):
             if ahora - t > TTL_MSG:
@@ -470,6 +514,7 @@ def webhook():
 
         if msg_id and msg_id in PROCESADOS:
             return "ok", 200
+
         if msg_id:
             PROCESADOS[msg_id] = ahora
 
@@ -488,17 +533,17 @@ Para agendar tu cita entra aquí:
 (Guarda este link para cancelar luego)
 """
 
-        # ✅ AQUÍ ESTÁ EL CAMBIO: responder usando el número que recibió el mensaje
+        # ✅ Responder usando el número que recibió
         enviar_whatsapp(
-    numero,
-    mensaje,
-    phone_number_id_override=phone_number_id_in
-) 
+            numero,
+            mensaje,
+            phone_number_id_override=phone_number_id_in
+        )
+
     except Exception as e:
-        print("Error webhook:", e)
+        print("❌ Error webhook:", e)
 
     return "ok", 200
-
 
 # =========================
 # RUTAS APP
@@ -513,8 +558,11 @@ def ping():
     return "ok", 200
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET", "POST", "HEAD"])
 def index():
+    if request.method == "HEAD":
+        return "", 200
+
     cliente_id_url = request.args.get("cliente_id")
     cliente_id_cookie = request.cookies.get("cliente_id")
 
@@ -532,7 +580,7 @@ def index():
 
     # ✅ “Borrar cada mes” = mostrar SOLO citas del mes actual
     hoy_dt = _now_cr()
-    mes_actual = hoy_dt.strftime("%Y-%m")  # ejemplo 2026-02
+    mes_actual = hoy_dt.strftime("%Y-%m")
     citas_cliente = [c for c in citas_cliente_all if str(c.get("fecha", "")).startswith(mes_actual)]
 
     # ✅ Calcular si puede cancelar: hasta 12h después de la hora agendada
@@ -542,7 +590,7 @@ def index():
             limite = cita_dt + timedelta(hours=12)
             c["cancelable"] = (hoy_dt <= limite)
         else:
-            c["cancelable"] = True  # si algo raro pasa, no lo bloqueamos
+            c["cancelable"] = True
 
     if request.method == "POST":
         cliente = request.form.get("cliente", "").strip()
@@ -673,7 +721,6 @@ Si deseas agendar de nuevo, entra al link.
     return resp
 
 
-# ✅ Marcar atendida (SOLO BARBERO)
 @app.route("/atendida", methods=["POST"])
 def atendida():
     if not barbero_autenticado():
@@ -687,7 +734,6 @@ def atendida():
     return redirect(url_for("barbero"))
 
 
-# ✅ Panel del barbero protegido por clave (cookie)
 @app.route("/barbero", methods=["GET"])
 def barbero():
     clave = request.args.get("clave")
@@ -697,7 +743,7 @@ def barbero():
 
     if clave == CLAVE_BARBERO:
         resp = make_response(_render_panel_barbero())
-        resp.set_cookie("clave_barbero", CLAVE_BARBERO, max_age=60 * 60 * 24 * 7)  # 7 días
+        resp.set_cookie("clave_barbero", CLAVE_BARBERO, max_age=60 * 60 * 24 * 7)
         return resp
 
     return """
@@ -714,16 +760,13 @@ def barbero():
 def _render_panel_barbero():
     citas = leer_citas()
 
-    # filtros: hoy | manana | todas
     solo = request.args.get("solo", "hoy")
-    # estado: activas | atendidas | canceladas | todas
     estado = request.args.get("estado", "activas")
     q = (request.args.get("q") or "").strip().lower()
 
     hoy = date.today().strftime("%Y-%m-%d")
     manana = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # ✅ Base por día seleccionado
     if solo == "hoy":
         citas_dia = [c for c in citas if str(c.get("fecha")) == hoy]
     elif solo == "manana":
@@ -731,7 +774,6 @@ def _render_panel_barbero():
     else:
         citas_dia = list(citas)
 
-    # ✅ Contadores (según el filtro de día)
     cant_total = len(citas_dia)
     cant_canceladas = sum(1 for c in citas_dia if c.get("servicio") == "CITA CANCELADA")
     cant_atendidas = sum(1 for c in citas_dia if c.get("servicio") == "CITA ATENDIDA")
@@ -743,7 +785,6 @@ def _render_panel_barbero():
         if c.get("servicio") == "CITA ATENDIDA"
     )
 
-    # ✅ Historial mensual 2026 (todas las citas del 2026, NO solo del día)
     meses = {str(i).zfill(2): {
         "mes": str(i).zfill(2),
         "total": 0,
@@ -769,7 +810,6 @@ def _render_panel_barbero():
 
     historial_2026 = [meses[m] for m in sorted(meses.keys())]
 
-    # ✅ Aplicar filtro estado + búsqueda al listado mostrado
     citas_filtradas = list(citas_dia)
 
     if estado == "activas":
@@ -806,6 +846,7 @@ def _render_panel_barbero():
         historial_2026=historial_2026
     )
 
+
 @app.route("/barbero/historial", methods=["GET"])
 def barbero_historial():
     if not barbero_autenticado():
@@ -813,7 +854,6 @@ def barbero_historial():
 
     citas = leer_citas()
 
-    # Historial mensual 2026
     meses = {str(i).zfill(2): {
         "mes": str(i).zfill(2),
         "total": 0,
@@ -844,6 +884,8 @@ def barbero_historial():
         historial_2026=historial_2026,
         nombre_barbero=NOMBRE_BARBERO
     )
+
+
 @app.route("/citas_json")
 def citas_json():
     citas = leer_citas()
@@ -858,15 +900,12 @@ def horas():
     if not fecha or not barbero:
         return jsonify([])
 
-    # Día de la semana: lunes=0 ... domingo=6
     fecha_obj = datetime.strptime(fecha, "%Y-%m-%d")
     dia_semana = fecha_obj.weekday()
 
-    # ✅ Miércoles: no trabaja
     if dia_semana == 2:
         return jsonify([])
 
-    # ✅ Domingo: 9:00am a 3:00pm
     if dia_semana == 6:
         horas_base = generar_horas(9, 0, 15, 0)
     else:
@@ -884,7 +923,6 @@ def horas():
 
     disponibles = [h for h in horas_base if h not in ocupadas]
 
-    # ✅ Bloquear horas que YA pasaron si la fecha es HOY
     hoy_str = _now_cr().strftime("%Y-%m-%d")
     if str(fecha) == hoy_str:
         ahora = _now_cr()
@@ -903,7 +941,6 @@ def horas():
 
 if __name__ == "__main__":
     app.run(debug=True)
-
 
 
 
